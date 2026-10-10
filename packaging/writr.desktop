@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Writr
+Comment=A minimal Markdown editor
+Exec=writr %f
+Icon=accessories-text-editor
+Terminal=false
+Categories=Utility;TextEditor;
+MimeType=text/markdown;text/plain;
+Keywords=Markdown;Writing;Editor;
+StartupNotify=true

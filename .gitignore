@@ -1,0 +1,14 @@
+/writr
+/tests/test_gap
+/tests/test_editor
+/core
+/packaging/*.tar.gz
+/packaging/*.pkg.tar.*
+/packaging/src/
+/packaging/pkg/
+
+/tests/test_workspace
+
+/tests/test_paste
+
+/tests/test_images
