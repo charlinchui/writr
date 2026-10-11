@@ -1,8 +1,10 @@
 # Writr
 
 A minimal, native Markdown editor written in C for Arch Linux and Omarchy.
-One window, one document, an uncluttered writing surface with no toolbar, footer,
-or title bar. An optional workspace tree lives behind Ctrl+T. Uses GTK 3 on Wayland
+One window, one document, an uncluttered writing surface with no toolbar or title
+bar. A small bottom-left label shows “Editing <note name>”. An optional workspace
+tree slides open and closed with Ctrl+T,
+including while the tree has keyboard focus. Uses GTK 3 on Wayland
 or X11 and follows your GTK theme. No browser, Electron, or C++ dependency.
 
 ## Build and run
@@ -25,14 +27,37 @@ Empty notes show a larger, faint “Start typing…” prompt at the cursor and 
 hints centered in the writing area. These disappear when you type and are never
 saved in the document.
 
+Application shortcuts run before the focused editor or tree handles keys. The
+tree's implicit filename search is disabled so its popup cannot capture commands;
+use the arrow keys and Enter to navigate and open notes.
+Hold Ctrl and press/release T repeatedly to toggle the tree. Keeping T held does
+not repeatedly toggle it.
+
 Keyboard shortcuts open, save, create, and close documents. Creation uses a small
 inline input: Enter confirms and Escape cancels. Closing a document
 returns to a blank writing surface. Unsaved changes prompt you to save, discard,
 or cancel. Canceling a file picker preserves the current document.
 
+Note names can include relative paths, such as `folder/file`, which creates
+`folder/file.md` in the selected folder. Missing parent folders prompt for
+confirmation before anything is created. “Don't ask again” remembers your choice
+across restarts and creates missing folders automatically. Cancel keeps the name
+input open for editing.
+Empty folders retain their tree expander and show “(empty)” until collapsed.
+The tree has top padding and hides note extensions in its labels; filenames on
+disk retain their extensions.
+
+Ctrl+D acts only in the tree; it does nothing while editing a note. Deletion
+prompts before permanently removing a file, or a folder and all its contents.
+File and folder confirmations have separate “Don't ask again” preferences,
+remembered across restarts. Unsaved changes in an affected note still prompt
+for Save/Discard/Cancel. After deleting the open note, a surviving note opens;
+an empty workspace receives a fresh `undefined.md`.
+
 | Shortcut | Action |
 | --- | --- |
 | Ctrl+T | Toggle workspace tree |
+| Ctrl+D | Delete selected file or folder while the tree has focus |
 | Ctrl+Shift+O | Create, open, or switch workspace folder |
 | Ctrl+Shift+N | Create a note in the selected folder |
 | Ctrl+Alt+N | Create a folder in the selected folder |

@@ -3,6 +3,12 @@
 #include <errno.h>
 #include <glib/gstdio.h>
 
+char *workspace_note_label(const char *name) {
+    const char *dot = strrchr(name,'.');
+    return dot && (!strcmp(dot,".md") || !strcmp(dot,".markdown") || !strcmp(dot,".txt"))
+        ? g_strndup(name,(gsize)(dot-name)) : g_strdup(name);
+}
+
 static gint order(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b, gpointer data) {
     (void)data; gboolean ad, bd; char *an, *bn;
     gtk_tree_model_get(model,a,WS_DIRECTORY,&ad,WS_NAME,&an,-1);
@@ -40,9 +46,16 @@ gboolean workspace_populate(GtkTreeStore *store, GtkTreeIter *parent, GFile *fol
         if (!directory && (type != G_FILE_TYPE_REGULAR || !(g_str_has_suffix(name,".md") || g_str_has_suffix(name,".markdown") || g_str_has_suffix(name,".txt")))) continue;
         GFile *file = g_file_get_child(folder,name); GtkTreeIter row;
         gtk_tree_store_append(store,&row,parent);
-        gtk_tree_store_set(store,&row,WS_NAME,g_file_info_get_display_name(info),WS_FILE,file,WS_DIRECTORY,directory,WS_LOADED,!directory,-1);
+        char *label = directory ? g_strdup(g_file_info_get_display_name(info)) : workspace_note_label(g_file_info_get_display_name(info));
+        gtk_tree_store_set(store,&row,WS_NAME,label,WS_FILE,file,WS_DIRECTORY,directory,WS_LOADED,!directory,-1);
+        g_free(label);
         if (directory) { GtkTreeIter placeholder; gtk_tree_store_append(store,&placeholder,&row); gtk_tree_store_set(store,&placeholder,WS_NAME,"",-1); }
         g_object_unref(file);
+    }
+    /* Retain an expander for empty folders so they can be collapsed again. */
+    if (parent && !gtk_tree_model_iter_has_child(GTK_TREE_MODEL(store),parent)) {
+        GtkTreeIter empty; gtk_tree_store_append(store,&empty,parent);
+        gtk_tree_store_set(store,&empty,WS_NAME,"(empty)",WS_LOADED,TRUE,-1);
     }
     if (parent) gtk_tree_store_set(store,parent,WS_LOADED,TRUE,-1);
     g_ptr_array_unref(infos); return TRUE;
@@ -67,13 +80,64 @@ gboolean workspace_root(GtkTreeStore *store, GFile *folder, GError **error) {
     g_object_unref(next); return ok;
 }
 
+static char **path_parts(const char *name, GError **error) {
+    if (!name || !*name || !g_utf8_validate(name,-1,NULL)) {
+        g_set_error_literal(error,G_IO_ERROR,G_IO_ERROR_INVALID_FILENAME,"Use a visible relative file or folder path."); return NULL;
+    }
+    char **parts = g_strsplit(name,"/",-1); guint count = g_strv_length(parts);
+    for (guint i = 0; i < count; i++) {
+        if (!*parts[i] || parts[i][0] == '.') {
+            g_set_error_literal(error,G_IO_ERROR,G_IO_ERROR_INVALID_FILENAME,"Use a relative path without empty, hidden, or parent components.");
+            g_strfreev(parts); return NULL;
+        }
+    }
+    return parts;
+}
+
+gboolean workspace_missing_parent(GFile *parent, const char *name, char **missing, GError **error) {
+    *missing = NULL; char **parts = path_parts(name,error); if (!parts) return FALSE;
+    guint count = g_strv_length(parts); GFile *folder = g_object_ref(parent); gboolean ok = TRUE;
+    for (guint i = 0; i+1 < count; i++) {
+        GFile *next = g_file_get_child(folder,parts[i]); GError *local = NULL;
+        GFileInfo *info = g_file_query_info(next,"standard::type,standard::is-symlink",G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS,NULL,&local);
+        g_object_unref(folder); folder = next;
+        if (!info) {
+            if (g_error_matches(local,G_IO_ERROR,G_IO_ERROR_NOT_FOUND)) {
+                g_clear_error(&local); g_free(parts[count-1]); parts[count-1] = NULL;
+                *missing = g_strjoinv("/",parts);
+            } else { g_propagate_error(error,local); ok = FALSE; }
+            break;
+        }
+        gboolean valid = !g_file_info_get_is_symlink(info) && g_file_info_get_file_type(info) == G_FILE_TYPE_DIRECTORY;
+        g_object_unref(info);
+        if (!valid) { g_set_error_literal(error,G_IO_ERROR,G_IO_ERROR_NOT_DIRECTORY,"A path component is not a regular folder."); ok = FALSE; break; }
+    }
+    g_object_unref(folder); g_strfreev(parts); return ok;
+}
+
 gboolean workspace_create(GFile *parent, const char *name, gboolean directory, GFile **created, GError **error) {
     *created = NULL;
-    if (!name || !*name || !strcmp(name,".") || !strcmp(name,"..") || strchr(name,'/') || name[0] == '.' || !g_utf8_validate(name,-1,NULL)) {
-        g_set_error_literal(error,G_IO_ERROR,G_IO_ERROR_INVALID_FILENAME,"Use a visible file or folder name without slashes."); return FALSE;
+    char **parts = path_parts(name,error); if (!parts) return FALSE;
+    guint count = g_strv_length(parts);
+    GFile *folder = g_object_ref(parent);
+    for (guint i = 0; i+1 < count; i++) {
+        GFile *next = g_file_get_child(folder,parts[i]); GError *local = NULL;
+        if (!g_file_make_directory(next,NULL,&local)) {
+            if (!g_error_matches(local,G_IO_ERROR,G_IO_ERROR_EXISTS)) {
+                g_propagate_error(error,local); g_object_unref(next); g_object_unref(folder); g_strfreev(parts); return FALSE;
+            }
+            g_clear_error(&local);
+        }
+        GFileInfo *info = g_file_query_info(next,"standard::type,standard::is-symlink",G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS,NULL,error);
+        gboolean valid = info && !g_file_info_get_is_symlink(info) && g_file_info_get_file_type(info) == G_FILE_TYPE_DIRECTORY;
+        if (info && !valid) g_set_error_literal(error,G_IO_ERROR,G_IO_ERROR_NOT_DIRECTORY,"A path component is not a regular folder.");
+        g_clear_object(&info); g_object_unref(folder); folder = next;
+        if (!valid) { g_object_unref(folder); g_strfreev(parts); return FALSE; }
     }
-    char *filename = !directory && !(g_str_has_suffix(name,".md") || g_str_has_suffix(name,".markdown") || g_str_has_suffix(name,".txt")) ? g_strconcat(name,".md",NULL) : g_strdup(name);
-    GFile *file = g_file_get_child(parent,filename); g_free(filename);
+    const char *base = parts[count-1];
+    char *filename = !directory && !(g_str_has_suffix(base,".md") || g_str_has_suffix(base,".markdown") || g_str_has_suffix(base,".txt")) ? g_strconcat(base,".md",NULL) : g_strdup(base);
+    GFile *file = g_file_get_child(folder,filename);
+    g_free(filename); g_strfreev(parts); g_object_unref(folder);
     gboolean ok;
     if (directory) ok = g_file_make_directory(file,NULL,error);
     else {
@@ -83,6 +147,28 @@ gboolean workspace_create(GFile *parent, const char *name, gboolean directory, G
     }
     if (ok) *created = file; else g_object_unref(file);
     return ok;
+}
+
+gboolean workspace_delete(GFile *file, GError **error) {
+    GFileInfo *info = g_file_query_info(file,"standard::type,standard::is-symlink",
+        G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS,NULL,error);
+    if (!info) return FALSE;
+    gboolean directory = !g_file_info_get_is_symlink(info) && g_file_info_get_file_type(info) == G_FILE_TYPE_DIRECTORY;
+    g_object_unref(info);
+    if (directory) {
+        GFileEnumerator *items = g_file_enumerate_children(file,"standard::name",G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS,NULL,error);
+        if (!items) return FALSE;
+        gboolean ok = TRUE; GError *local = NULL;
+        while ((info = g_file_enumerator_next_file(items,NULL,&local))) {
+            GFile *child = g_file_get_child(file,g_file_info_get_name(info)); g_object_unref(info);
+            ok = workspace_delete(child,error); g_object_unref(child);
+            if (!ok) break;
+        }
+        g_object_unref(items);
+        if (local) { g_propagate_error(error,local); return FALSE; }
+        if (!ok) return FALSE;
+    }
+    return g_file_delete(file,NULL,error);
 }
 
 /* Walk in the same sorted, depth-first order as the tree, including collapsed folders. */

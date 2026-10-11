@@ -14,8 +14,8 @@ typedef enum { INPUT_NONE, INPUT_WORKSPACE, INPUT_NOTE, INPUT_FOLDER } InputMode
 typedef struct { size_t at; char *text; size_t n; gboolean insert; guint group; } Edit;
 
 typedef struct {
-    GtkWidget *window, *view, *sidebar, *tree, *input;
-    InputMode input_mode; GFile *input_parent;
+    GtkWidget *window, *view, *sidebar, *tree, *input, *status;
+    InputMode input_mode; GFile *input_parent; GtkEventController *shortcuts; gboolean tree_key_down;
     GHashTable *drafts; gboolean auto_name; GtkTextBuffer *buffer;
     GtkTreeStore *store; GFile *workspace; gboolean source; ImageLayer *images;
     Gap gap; GFile *file; char *etag, *saved;
@@ -37,6 +37,10 @@ static gboolean dirty(Editor *e) {
 static void title(Editor *e) {
     if (!e->window) return;
     char *name = e->file ? g_file_get_basename(e->file) : g_strdup("Untitled");
+    if (e->status) {
+        char *label = workspace_note_label(name), *message = g_strconcat("Editing ",label,NULL);
+        gtk_label_set_text(GTK_LABEL(e->status),message); g_free(message); g_free(label);
+    }
     char *s = g_strdup_printf("%s%s — Writr", dirty(e) ? "• " : "", name);
     gtk_window_set_title(GTK_WINDOW(e->window), s); g_free(s); g_free(name);
 }
@@ -215,6 +219,11 @@ static GFile *workspace_parent(Editor *e) {
     if (e->tree && gtk_tree_selection_get_selected(gtk_tree_view_get_selection(GTK_TREE_VIEW(e->tree)), &model, &it)) {
         GFile *file = NULL; gboolean directory;
         gtk_tree_model_get(model, &it, WS_FILE, &file, WS_DIRECTORY, &directory, -1);
+        if (!file) {
+            GtkTreeIter parent;
+            if (gtk_tree_model_iter_parent(model,&parent,&it))
+                gtk_tree_model_get(model,&parent,WS_FILE,&file,WS_DIRECTORY,&directory,-1);
+        }
         if (file) {
             if (directory) return file;
             GFile *parent = g_file_get_parent(file); g_object_unref(file); return parent;
@@ -317,10 +326,10 @@ static void workspace_refresh(Editor *e) {
 
 static void toggle_tree(Editor *e) {
     if (!e->workspace) { choose_workspace(e); return; }
-    if (gtk_widget_get_visible(e->sidebar)) {
-        gtk_widget_hide(e->sidebar); gtk_widget_grab_focus(e->view);
+    if (gtk_revealer_get_reveal_child(GTK_REVEALER(e->sidebar))) {
+        gtk_revealer_set_reveal_child(GTK_REVEALER(e->sidebar),FALSE); gtk_widget_grab_focus(e->view);
     } else {
-        workspace_refresh(e); gtk_widget_show(e->sidebar); gtk_widget_grab_focus(e->tree);
+        workspace_refresh(e); gtk_revealer_set_reveal_child(GTK_REVEALER(e->sidebar),TRUE); gtk_widget_grab_focus(e->tree);
     }
 }
 
@@ -445,6 +454,124 @@ static gboolean input_key(GtkWidget *widget, GdkEventKey *event, Editor *e) {
     return TRUE;
 }
 
+static char *settings_path(void) {
+    return g_build_filename(g_get_user_config_dir(),"writr","settings.ini",NULL);
+}
+
+static gboolean skip_confirmation(const char *group, const char *key) {
+    char *path = settings_path(); GKeyFile *settings = g_key_file_new();
+    g_key_file_load_from_file(settings,path,G_KEY_FILE_NONE,NULL);
+    gboolean skip = g_key_file_get_boolean(settings,group,key,NULL);
+    g_key_file_unref(settings); g_free(path); return skip;
+}
+
+static gboolean remember_confirmation(const char *group, const char *key, GError **error) {
+    char *path = settings_path(); GKeyFile *settings = g_key_file_new();
+    g_key_file_load_from_file(settings,path,G_KEY_FILE_NONE,NULL);
+    g_key_file_set_boolean(settings,group,key,TRUE);
+    GFile *file = g_file_new_for_path(path), *parent = g_file_get_parent(file);
+    GError *local = NULL;
+    gboolean ok = g_file_make_directory_with_parents(parent,NULL,&local);
+    if (!ok && g_error_matches(local,G_IO_ERROR,G_IO_ERROR_EXISTS)) { g_clear_error(&local); ok = TRUE; }
+    if (!ok) g_propagate_error(error,local);
+    if (ok) {
+        gsize length; char *data = g_key_file_to_data(settings,&length,NULL);
+        ok = g_file_replace_contents(file,data,length,NULL,FALSE,G_FILE_CREATE_NONE,NULL,NULL,error); g_free(data);
+    }
+    g_object_unref(parent); g_object_unref(file); g_key_file_unref(settings); g_free(path); return ok;
+}
+
+static gboolean skip_folder_confirmation(void) {
+    return skip_confirmation("creation","create-missing-folders-without-asking");
+}
+
+static gboolean remember_folder_confirmation(GError **error) {
+    return remember_confirmation("creation","create-missing-folders-without-asking",error);
+}
+
+static gboolean confirm_parent_folders(Editor *e, const char *name, GError **error) {
+    char *missing = NULL;
+    if (!workspace_missing_parent(e->input_parent,name,&missing,error)) return FALSE;
+    if (!missing || skip_folder_confirmation()) { g_free(missing); return TRUE; }
+    GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(e->window),GTK_DIALOG_MODAL|GTK_DIALOG_DESTROY_WITH_PARENT,
+        GTK_MESSAGE_QUESTION,GTK_BUTTONS_NONE,"%s does not seem to exist, do you want to create it?",missing);
+    gtk_dialog_add_buttons(GTK_DIALOG(dialog),"Cancel",GTK_RESPONSE_CANCEL,"Create",GTK_RESPONSE_ACCEPT,NULL);
+    gtk_dialog_set_default_response(GTK_DIALOG(dialog),GTK_RESPONSE_CANCEL);
+    GtkWidget *check = gtk_check_button_new_with_label("Don't ask again");
+    gtk_box_pack_start(GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(dialog))),check,FALSE,FALSE,8);
+    gtk_widget_show(check);
+    gboolean accepted = gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT;
+    gboolean remember = accepted && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(check));
+    gtk_widget_destroy(dialog); g_free(missing);
+    if (remember && !remember_folder_confirmation(error)) return FALSE;
+    return accepted;
+}
+
+static gboolean confirm_delete(Editor *e, GFile *file, gboolean directory, GError **error) {
+    const char *preference = directory ? "folders-without-asking" : "files-without-asking";
+    if (skip_confirmation("deletion",preference)) return TRUE;
+    char *name = g_file_get_basename(file);
+    GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(e->window),GTK_DIALOG_MODAL|GTK_DIALOG_DESTROY_WITH_PARENT,
+        GTK_MESSAGE_QUESTION,GTK_BUTTONS_NONE,directory ? "Delete folder %s and all its contents?" : "Delete file %s?",name);
+    gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dialog),"This permanently deletes %s.",directory ? "the folder and every file inside it" : "the file");
+    gtk_dialog_add_buttons(GTK_DIALOG(dialog),"Cancel",GTK_RESPONSE_CANCEL,"Delete",GTK_RESPONSE_ACCEPT,NULL);
+    gtk_dialog_set_default_response(GTK_DIALOG(dialog),GTK_RESPONSE_CANCEL);
+    GtkWidget *check = gtk_check_button_new_with_label("Don't ask again");
+    gtk_box_pack_start(GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(dialog))),check,FALSE,FALSE,8); gtk_widget_show(check);
+    gboolean accepted = gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT;
+    gboolean remember = accepted && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(check));
+    gtk_widget_destroy(dialog); g_free(name);
+    if (remember && !remember_confirmation("deletion",preference,error)) return FALSE;
+    return accepted;
+}
+
+static gboolean delete_item(Editor *e, GFile *item) {
+    if (!e->workspace || g_file_equal(item,e->workspace) || !g_file_has_prefix(item,e->workspace)) return FALSE;
+    GFile *target = g_object_ref(item); GError *error = NULL;
+    GFileInfo *info = g_file_query_info(target,"standard::type,standard::is-symlink",G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS,NULL,&error);
+    if (!info) { fail(e,error->message); g_clear_error(&error); g_object_unref(target); return FALSE; }
+    gboolean directory = !g_file_info_get_is_symlink(info) && g_file_info_get_file_type(info) == G_FILE_TYPE_DIRECTORY;
+    g_object_unref(info);
+    gboolean current = e->file && g_file_equal(e->file,target);
+    gboolean affected = current || (directory && e->file && g_file_has_prefix(e->file,target));
+    if (affected && !discard(e)) { g_object_unref(target); return FALSE; }
+    /* Saving a fresh note can rename it to its heading before deletion. */
+    if (current) g_set_object(&target,e->file);
+    if (!confirm_delete(e,target,directory,&error)) {
+        if (error) { fail(e,error->message); g_clear_error(&error); }
+        g_object_unref(target); return FALSE;
+    }
+    gboolean ok = workspace_delete(target,&error);
+    if (affected && (ok || !g_file_query_exists(e->file,NULL))) load(e,NULL);
+    if (ok && e->drafts) {
+        GHashTableIter drafts; gpointer uri;
+        g_hash_table_iter_init(&drafts,e->drafts);
+        while (g_hash_table_iter_next(&drafts,&uri,NULL)) {
+            GFile *draft = g_file_new_for_uri(uri);
+            if (g_file_equal(draft,target) || (directory && g_file_has_prefix(draft,target))) g_hash_table_iter_remove(&drafts);
+            g_object_unref(draft);
+        }
+    }
+    workspace_refresh(e);
+    if (affected && !e->file) {
+        GPtrArray *notes = workspace_notes(e->workspace,NULL);
+        if (notes && notes->len) load(e,g_ptr_array_index(notes,0));
+        if (notes) g_ptr_array_unref(notes);
+    }
+    select_current(e);
+    if (error) { fail(e,error->message); g_clear_error(&error); }
+    if (e->tree) gtk_widget_grab_focus(e->tree);
+    g_object_unref(target); return ok;
+}
+
+static void delete_selected(Editor *e) {
+    if (!e->tree || !gtk_widget_has_focus(e->tree)) return;
+    GtkTreeModel *model; GtkTreeIter row;
+    if (!gtk_tree_selection_get_selected(gtk_tree_view_get_selection(GTK_TREE_VIEW(e->tree)),&model,&row)) return;
+    GFile *file = NULL; gtk_tree_model_get(model,&row,WS_FILE,&file,-1);
+    if (file) { delete_item(e,file); g_object_unref(file); }
+}
+
 static void input_enter(GtkEntry *entry, Editor *e) {
     char *name = g_strdup(gtk_entry_get_text(entry)); g_strstrip(name);
     GError *error = NULL; GFile *created = NULL;
@@ -455,7 +582,7 @@ static void input_enter(GtkEntry *entry, Editor *e) {
         gboolean ok = g_file_make_directory_with_parents(folder,NULL,&error);
         if (!ok && g_error_matches(error,G_IO_ERROR,G_IO_ERROR_EXISTS)) { g_clear_error(&error); ok = TRUE; }
         if (ok && set_workspace(e,folder)) {
-            hide_input(e); gtk_widget_show(e->sidebar);
+            hide_input(e); gtk_revealer_set_reveal_child(GTK_REVEALER(e->sidebar),TRUE);
             if (!e->file && !dirty(e)) {
                 GPtrArray *notes = workspace_notes(folder,&error);
                 if (notes && notes->len) load(e,g_ptr_array_index(notes,0));
@@ -468,6 +595,10 @@ static void input_enter(GtkEntry *entry, Editor *e) {
         gboolean folder = e->input_mode == INPUT_FOLDER;
         gboolean default_name = !*name && !folder;
         if (default_name) { g_free(name); name = g_strdup("Untitled.md"); }
+        if (!confirm_parent_folders(e,name,&error)) {
+            if (error) { fail(e,error->message); g_clear_error(&error); }
+            gtk_widget_grab_focus(e->input); g_free(name); return;
+        }
         gboolean ok = workspace_create(e->input_parent,name,folder,&created,&error);
         for (guint suffix = 2; !ok && default_name && g_error_matches(error,G_IO_ERROR,G_IO_ERROR_EXISTS); suffix++) {
             g_clear_error(&error); g_free(name); name = g_strdup_printf("Untitled %u.md",suffix);
@@ -490,7 +621,7 @@ static void prompt(Editor *e, InputMode mode) {
     g_clear_object(&e->input_parent);
     e->input_parent = mode == INPUT_NOTE || mode == INPUT_FOLDER ? workspace_parent(e) : NULL;
     e->input_mode = mode;
-    const char *hint = mode == INPUT_WORKSPACE ? "Workspace folder · Enter to create or open" : mode == INPUT_FOLDER ? "Folder name" : "Note name · Enter for Untitled.md";
+    const char *hint = mode == INPUT_WORKSPACE ? "Workspace folder · Enter to create or open" : mode == INPUT_FOLDER ? "Folder name or path" : "Note name or folder/note · Enter for Untitled.md";
     gtk_entry_set_placeholder_text(GTK_ENTRY(e->input), hint); gtk_widget_set_tooltip_text(e->input,hint);
     atk_object_set_name(gtk_widget_get_accessible(e->input),hint);
     char *value = mode == INPUT_WORKSPACE ? (e->workspace ? g_file_get_path(e->workspace) : g_build_filename(g_get_home_dir(),"Documents","Notes",NULL)) : g_strdup("");
@@ -637,6 +768,7 @@ static gboolean key(GtkWidget *w, GdkEventKey *event, Editor *e) {
     }
     else if (k == GDK_KEY_Page_Down || k == GDK_KEY_Page_Up) navigate(e,k == GDK_KEY_Page_Down);
     else if (k == GDK_KEY_t) toggle_tree(e);
+    else if (k == GDK_KEY_d) delete_selected(e);
     else if (k == GDK_KEY_o && shift) choose_workspace(e);
     else if (k == GDK_KEY_n && (event->state & GDK_MOD1_MASK)) prompt(e, INPUT_FOLDER);
     else if (k == GDK_KEY_n && shift) prompt(e, INPUT_NOTE);
@@ -653,6 +785,40 @@ static gboolean key(GtkWidget *w, GdkEventKey *event, Editor *e) {
         }
     } else return FALSE;
     return TRUE;
+}
+
+static gboolean shortcut_pressed(GtkEventControllerKey *controller, guint keyval,
+                                 guint keycode, GdkModifierType modifiers, Editor *e) {
+    (void)controller;
+    gboolean toggle = (modifiers & GDK_CONTROL_MASK) && gdk_keyval_to_lower(keyval) == GDK_KEY_t;
+    if (toggle && e->input_mode == INPUT_NONE) {
+        if (e->tree_key_down) return TRUE;
+        e->tree_key_down = TRUE;
+    }
+    GdkEventKey event = {0}; event.type = GDK_KEY_PRESS;
+    event.keyval = keyval; event.hardware_keycode = keycode; event.state = modifiers;
+    return key(e->window,&event,e);
+}
+
+static void shortcut_released(GtkEventControllerKey *controller, guint keyval,
+                              guint keycode, GdkModifierType modifiers, Editor *e) {
+    (void)controller; (void)keycode; (void)modifiers;
+    if (gdk_keyval_to_lower(keyval) == GDK_KEY_t) e->tree_key_down = FALSE;
+}
+
+static gboolean shortcut_focus_out(GtkWidget *widget, GdkEventFocus *event, Editor *e) {
+    (void)widget; (void)event; e->tree_key_down = FALSE; return FALSE;
+}
+
+static void install_shortcuts(Editor *e) {
+    /* Implicit filename search creates a popup that can grab subsequent keys. */
+    gtk_tree_view_set_enable_search(GTK_TREE_VIEW(e->tree),FALSE);
+    gtk_tree_view_set_search_column(GTK_TREE_VIEW(e->tree),-1);
+    e->shortcuts = gtk_event_controller_key_new(e->window);
+    gtk_event_controller_set_propagation_phase(e->shortcuts,GTK_PHASE_CAPTURE);
+    g_signal_connect(e->shortcuts,"key-pressed",G_CALLBACK(shortcut_pressed),e);
+    g_signal_connect(e->shortcuts,"key-released",G_CALLBACK(shortcut_released),e);
+    g_signal_connect(e->window,"focus-out-event",G_CALLBACK(shortcut_focus_out),e);
 }
 
 static void destroyed(GtkWidget *w, Editor *e) { (void)w; e->closed = TRUE; gtk_main_quit(); }
@@ -691,9 +857,14 @@ int main(int argc, char **argv) {
     Editor e = {0}; e.drafts = g_hash_table_new_full(g_str_hash,g_str_equal,g_free,NULL); e.history = g_ptr_array_new_with_free_func(edit_free); e.saved = g_strdup("");
     e.window = gtk_window_new(GTK_WINDOW_TOPLEVEL); gtk_window_set_default_size(GTK_WINDOW(e.window), 880, 760);
     gtk_window_set_decorated(GTK_WINDOW(e.window), FALSE);
-    GtkWidget *paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL), *scroll = gtk_scrolled_window_new(NULL, NULL);
+    GtkWidget *paned = gtk_box_new(GTK_ORIENTATION_HORIZONTAL,0), *scroll = gtk_scrolled_window_new(NULL, NULL);
     GtkWidget *overlay = gtk_overlay_new(); gtk_container_add(GTK_CONTAINER(e.window), overlay);
     gtk_container_add(GTK_CONTAINER(overlay), paned);
+    e.status = gtk_label_new("Editing Untitled"); gtk_widget_set_name(e.status,"writr-status");
+    gtk_widget_set_halign(e.status,GTK_ALIGN_START); gtk_widget_set_valign(e.status,GTK_ALIGN_END);
+    gtk_widget_set_margin_start(e.status,16); gtk_widget_set_margin_bottom(e.status,12);
+    gtk_label_set_ellipsize(GTK_LABEL(e.status),PANGO_ELLIPSIZE_END); gtk_label_set_max_width_chars(GTK_LABEL(e.status),50);
+    gtk_overlay_add_overlay(GTK_OVERLAY(overlay),e.status); gtk_overlay_set_overlay_pass_through(GTK_OVERLAY(overlay),e.status,TRUE);
     e.input = gtk_entry_new(); gtk_widget_set_halign(e.input,GTK_ALIGN_CENTER); gtk_widget_set_valign(e.input,GTK_ALIGN_START);
     gtk_widget_set_margin_top(e.input,32); gtk_widget_set_size_request(e.input,480,-1);
     gtk_widget_set_no_show_all(e.input,TRUE); gtk_overlay_add_overlay(GTK_OVERLAY(overlay),e.input);
@@ -704,12 +875,19 @@ int main(int argc, char **argv) {
     GtkCellRenderer *renderer = gtk_cell_renderer_text_new();
     gtk_tree_view_insert_column_with_attributes(GTK_TREE_VIEW(e.tree), -1, "Notes", renderer, "text", WS_NAME, NULL);
     gtk_widget_set_tooltip_text(e.tree, "Workspace · Ctrl+Shift+O to open a folder");
-    e.sidebar = gtk_scrolled_window_new(NULL, NULL); gtk_container_add(GTK_CONTAINER(e.sidebar), e.tree);
-    gtk_widget_set_size_request(e.sidebar, 180, -1);
-    gtk_widget_show_all(e.sidebar); gtk_widget_hide(e.sidebar);
-    gtk_widget_set_no_show_all(e.sidebar, TRUE);
-    gtk_paned_pack1(GTK_PANED(paned), e.sidebar, FALSE, FALSE); gtk_paned_pack2(GTK_PANED(paned), scroll, TRUE, FALSE);
-    gtk_paned_set_position(GTK_PANED(paned), 230);
+    GtkWidget *tree_scroll = gtk_scrolled_window_new(NULL,NULL);
+    GtkWidget *sidebar_box = gtk_box_new(GTK_ORIENTATION_VERTICAL,0);
+    gtk_widget_set_name(sidebar_box,"writr-sidebar");
+    gtk_widget_set_margin_top(tree_scroll,16); gtk_widget_set_margin_bottom(tree_scroll,36);
+    gtk_box_pack_start(GTK_BOX(sidebar_box),tree_scroll,TRUE,TRUE,0);
+    gtk_container_add(GTK_CONTAINER(tree_scroll),e.tree);
+    gtk_widget_set_size_request(tree_scroll,230,-1);
+    e.sidebar = gtk_revealer_new();
+    gtk_revealer_set_transition_type(GTK_REVEALER(e.sidebar),GTK_REVEALER_TRANSITION_TYPE_SLIDE_RIGHT);
+    gtk_revealer_set_transition_duration(GTK_REVEALER(e.sidebar),160);
+    gtk_container_add(GTK_CONTAINER(e.sidebar),sidebar_box);
+    gtk_box_pack_start(GTK_BOX(paned),e.sidebar,FALSE,FALSE,0);
+    gtk_box_pack_start(GTK_BOX(paned),scroll,TRUE,TRUE,0);
     g_signal_connect(e.tree, "test-expand-row", G_CALLBACK(expand_folder), &e);
     g_signal_connect(e.tree, "row-activated", G_CALLBACK(activate_note), &e);
     e.view = gtk_text_view_new(); e.buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(e.view));
@@ -718,15 +896,22 @@ int main(int argc, char **argv) {
     gtk_text_view_set_top_margin(GTK_TEXT_VIEW(e.view), 32); gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(e.view), 40);
     gtk_text_view_set_pixels_below_lines(GTK_TEXT_VIEW(e.view), 5); gtk_container_add(GTK_CONTAINER(scroll), e.view);
     GtkCssProvider *css = gtk_css_provider_new();
-    gtk_css_provider_load_from_data(css, "textview { font-family: 'Open Sans', sans-serif; font-size: 17px; }", -1, NULL);
-    gtk_style_context_add_provider(gtk_widget_get_style_context(e.view), GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); g_object_unref(css);
+    gtk_css_provider_load_from_data(css,
+        "textview { font-family: 'Open Sans', sans-serif; font-size: 17px; }"
+        "#writr-sidebar { background-color: shade(@theme_base_color, 0.88); border-right: 1px solid alpha(@theme_fg_color, 0.2); }"
+        "#writr-sidebar treeview.view { background-color: shade(@theme_base_color, 0.88); }"
+        "#writr-status { font-family: 'Open Sans', sans-serif; font-size: 12px; color: alpha(@theme_fg_color, 0.6); }",
+        -1, NULL);
+    gtk_style_context_add_provider_for_screen(gtk_widget_get_screen(e.window), GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION); g_object_unref(css);
     markdown_init(e.buffer); e.images = images_new(GTK_TEXT_VIEW(e.view));
     g_signal_connect_after(e.view,"draw",G_CALLBACK(empty_hints),&e);
     g_signal_connect(e.buffer, "insert-text", G_CALLBACK(inserted), &e); g_signal_connect(e.buffer, "delete-range", G_CALLBACK(deleted), &e);
     g_signal_connect_after(e.buffer,"insert-text",G_CALLBACK(format_inserted),&e);
     g_signal_connect_after(e.buffer,"delete-range",G_CALLBACK(format_deleted),&e);
     g_signal_connect(e.buffer, "changed", G_CALLBACK(changed), &e); g_signal_connect(e.buffer, "begin-user-action", G_CALLBACK(begin), &e); g_signal_connect(e.buffer, "end-user-action", G_CALLBACK(end), &e);
-    g_signal_connect(e.window, "key-press-event", G_CALLBACK(key), &e); g_signal_connect(e.window, "delete-event", G_CALLBACK(closing), &e);
+    /* Capture all application commands before the focused widget's handlers. */
+    install_shortcuts(&e);
+    g_signal_connect(e.window, "delete-event", G_CALLBACK(closing), &e);
     g_signal_connect(e.window, "destroy", G_CALLBACK(destroyed), &e);
     g_signal_connect(e.view,"paste-clipboard",G_CALLBACK(paste_clipboard),&e);
     g_signal_connect(e.view,"copy-clipboard",G_CALLBACK(copy_image),&e);
@@ -735,7 +920,7 @@ int main(int argc, char **argv) {
     if (argc > 1) {
         GFile *file = g_file_new_for_commandline_arg(argv[1]);
         if (g_file_query_file_type(file, G_FILE_QUERY_INFO_NONE, NULL) == G_FILE_TYPE_DIRECTORY) {
-            if (set_workspace(&e, file)) gtk_widget_show(e.sidebar);
+            if (set_workspace(&e, file)) gtk_revealer_set_reveal_child(GTK_REVEALER(e.sidebar),TRUE);
             title(&e);
         } else {
             GFile *parent = g_file_get_parent(file); if (parent) { set_workspace(&e,parent); g_object_unref(parent); }
@@ -747,6 +932,7 @@ int main(int argc, char **argv) {
     gtk_main();
     if (g_main_context_find_source_by_id(NULL,startup_source)) g_source_remove(startup_source);
     if (e.style_source) g_source_remove(e.style_source);
+    g_clear_object(&e.shortcuts);
     images_free(e.images);
     g_clear_object(&e.store); g_clear_object(&e.workspace); g_clear_object(&e.input_parent); g_hash_table_unref(e.drafts);
     gap_free(&e.gap); g_ptr_array_unref(e.history); g_clear_object(&e.file); g_free(e.etag); g_free(e.saved); return 0;
