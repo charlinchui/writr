@@ -8,7 +8,7 @@ or X11 and follows your GTK theme. No browser, Electron, or C++ dependency.
 ## Build and run
 
 ```sh
-sudo pacman -S --needed base-devel gtk3 libpng pkgconf
+sudo pacman -S --needed base-devel gtk3 libpng pkgconf ttf-opensans
 make
 ./writr
 ./writr notes.md
@@ -19,6 +19,11 @@ Install the binary and desktop launcher with `sudo make install`.
 Use `make DESTDIR=/tmp/writr-install install` for a staged installation.
 
 ## Editing
+
+The editor uses Open Sans, with a system sans-serif fallback if it is unavailable.
+Empty notes show a larger, faint “Start typing…” prompt at the cursor and basic shortcut
+hints centered in the writing area. These disappear when you type and are never
+saved in the document.
 
 Keyboard shortcuts open, save, create, and close documents. Creation uses a small
 inline input: Enter confirms and Escape cancels. Closing a document
@@ -54,6 +59,10 @@ names are hidden; code content stays visible and highlighted. Toggle Ctrl+Shift+
 to show source when editing delimiters or link destinations, or copying raw
 Markdown. Formatting never removes bytes from the document or saved file.
 Unicode input, selection, clipboard, and input methods are handled by GTK.
+
+Empty headings, quotes, inline formatting, and code fences keep their markers
+visible until they contain text. A fence's language label alone does not count
+as code content.
 
 ## Pasting images and links
 

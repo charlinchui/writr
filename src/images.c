@@ -7,6 +7,7 @@
 static void reference_free(gpointer data) {
     ImageReference *ref = data; g_free(ref->destination); g_free(ref->alt); g_free(ref);
 }
+
 GPtrArray *image_references(const char *source) {
     GPtrArray *refs = g_ptr_array_new_with_free_func(reference_free);
     for (const char *p = source; *p; p = g_utf8_next_char(p)) {
@@ -35,6 +36,7 @@ GPtrArray *image_references(const char *source) {
     }
     return refs;
 }
+
 GFile *image_resolve(GFile *folder, const char *destination) {
     char *scheme = g_uri_parse_scheme(destination); GFile *file = NULL;
     if (scheme) { if (!g_ascii_strcasecmp(scheme,"file")) file = g_file_new_for_uri(destination); }
@@ -48,7 +50,9 @@ GFile *image_resolve(GFile *folder, const char *destination) {
     }
     g_free(scheme); return file;
 }
+
 static void pixels_free(guchar *pixels, gpointer data) { (void)data; g_free(pixels); }
+
 GdkPixbuf *image_read(GFile *file, GError **error) {
     char *bytes = NULL; gsize size = 0;
     if (!g_file_load_contents(file,NULL,&bytes,&size,NULL,error)) return NULL;
@@ -90,6 +94,7 @@ static gboolean image_line_only(GtkTextBuffer *buffer, GPtrArray *refs, int line
     }
     return found;
 }
+
 int image_skip_position(GtkTextBuffer *buffer, GPtrArray *refs, int from, int target, int direction) {
     GtkTextIter at,next; gtk_text_buffer_get_iter_at_offset(buffer,&at,from); gtk_text_buffer_get_iter_at_offset(buffer,&next,target);
     int line = gtk_text_iter_get_line(&next), current = gtk_text_iter_get_line(&at), column = gtk_text_iter_get_line_offset(&at);
@@ -104,6 +109,7 @@ int image_skip_position(GtkTextBuffer *buffer, GPtrArray *refs, int from, int ta
     while (column-- > 0 && !gtk_text_iter_ends_line(&next)) gtk_text_iter_forward_char(&next);
     return gtk_text_iter_get_offset(&next);
 }
+
 gboolean image_delete_edge(GtkTextBuffer *buffer, GPtrArray *refs, gboolean backward) {
     if (gtk_text_buffer_get_has_selection(buffer)) return FALSE;
     GtkTextIter at; gtk_text_buffer_get_iter_at_mark(buffer,&at,gtk_text_buffer_get_insert(buffer)); int position = gtk_text_iter_get_offset(&at);
@@ -122,6 +128,7 @@ gboolean image_delete_edge(GtkTextBuffer *buffer, GPtrArray *refs, gboolean back
     }
     return FALSE;
 }
+
 char *image_boundary_text(GtkTextBuffer *buffer, GPtrArray *refs, int position, const char *text, int length, int *caret_back) {
     *caret_back = 0; if (length <= 0) return NULL;
     for (guint i = 0; i < refs->len; i++) {
@@ -136,7 +143,9 @@ char *image_boundary_text(GtkTextBuffer *buffer, GPtrArray *refs, int position, 
 }
 
 typedef struct { GtkTextMark *start; GtkTextTag *space; int height; } ImageBlock;
+
 typedef struct { GtkTextMark *start, *end; ImageBlock *block; GdkPixbuf *original, *scaled; int offset; } Preview;
+
 struct ImageLayer {
     GtkTextView *view; GtkTextBuffer *buffer; GtkTextTag *hidden;
     GPtrArray *previews, *blocks; GHashTable *cache;
@@ -144,6 +153,7 @@ struct ImageLayer {
     gboolean inserting;
     guint layout_source; int width;
 };
+
 static void clear(ImageLayer *layer) {
     for (guint i = 0; i < layer->previews->len; i++) {
         Preview *preview = g_ptr_array_index(layer->previews,i);
@@ -159,6 +169,7 @@ static void clear(ImageLayer *layer) {
     g_ptr_array_set_size(layer->blocks,0);
     GtkTextIter a,z; gtk_text_buffer_get_bounds(layer->buffer,&a,&z); gtk_text_buffer_remove_tag(layer->buffer,layer->hidden,&a,&z);
 }
+
 static void layout(ImageLayer *layer) {
     int width = MAX(1,gtk_widget_get_allocated_width(GTK_WIDGET(layer->view))-gtk_text_view_get_left_margin(layer->view)-gtk_text_view_get_right_margin(layer->view)-8);
     layer->width = width;
@@ -178,12 +189,15 @@ static void layout(ImageLayer *layer) {
     }
     gtk_widget_queue_draw(GTK_WIDGET(layer->view));
 }
+
 static gboolean resize_idle(gpointer data) { ImageLayer *layer = data; layer->layout_source = 0; layout(layer); return G_SOURCE_REMOVE; }
+
 static void resized(GtkWidget *widget, GtkAllocation *allocation, ImageLayer *layer) {
     (void)widget;
     int width = MAX(1,allocation->width-gtk_text_view_get_left_margin(layer->view)-gtk_text_view_get_right_margin(layer->view)-8);
     if (width != layer->width && !layer->layout_source) layer->layout_source = g_idle_add(resize_idle,layer);
 }
+
 static gboolean rectangle(ImageLayer *layer, Preview *preview, GdkRectangle *rect) {
     GtkTextIter a,z; gtk_text_buffer_get_iter_at_mark(layer->buffer,&a,preview->start); gtk_text_buffer_get_iter_at_mark(layer->buffer,&z,preview->end);
     if (gtk_text_iter_compare(&a,&z) >= 0 || !preview->scaled) return FALSE;
@@ -192,12 +206,14 @@ static gboolean rectangle(ImageLayer *layer, Preview *preview, GdkRectangle *rec
     gtk_text_view_buffer_to_window_coords(layer->view,GTK_TEXT_WINDOW_TEXT,gtk_text_view_get_left_margin(layer->view),y+preview->offset+6,&rect->x,&rect->y);
     rect->width = gdk_pixbuf_get_width(preview->scaled); rect->height = gdk_pixbuf_get_height(preview->scaled); return TRUE;
 }
+
 static gboolean selected(ImageLayer *layer, Preview *preview) {
     GtkTextIter a,z,start,end;
     if (!gtk_text_buffer_get_selection_bounds(layer->buffer,&a,&z)) return FALSE;
     gtk_text_buffer_get_iter_at_mark(layer->buffer,&start,preview->start); gtk_text_buffer_get_iter_at_mark(layer->buffer,&end,preview->end);
     return gtk_text_iter_compare(&a,&end) < 0 && gtk_text_iter_compare(&z,&start) > 0;
 }
+
 static gboolean draw(GtkWidget *widget, cairo_t *cr, ImageLayer *layer) {
     GdkWindow *window = gtk_text_view_get_window(layer->view,GTK_TEXT_WINDOW_TEXT);
     if (!window || !gtk_cairo_should_draw_window(cr,window)) return FALSE;
@@ -213,7 +229,9 @@ static gboolean draw(GtkWidget *widget, cairo_t *cr, ImageLayer *layer) {
     }
     cairo_restore(cr); return FALSE;
 }
+
 static GPtrArray *current_refs(ImageLayer *layer);
+
 static gboolean pressed(GtkWidget *widget, GdkEventButton *event, ImageLayer *layer) {
     if (event->button != 1 || gtk_text_view_get_window_type(layer->view,event->window) != GTK_TEXT_WINDOW_TEXT) return FALSE;
     for (guint i = 0; i < layer->previews->len; i++) {
@@ -240,9 +258,11 @@ static gboolean pressed(GtkWidget *widget, GdkEventButton *event, ImageLayer *la
     }
     return FALSE;
 }
+
 static void mark_set(GtkTextBuffer *buffer, GtkTextIter *at, GtkTextMark *mark, ImageLayer *layer) {
     (void)buffer; (void)at; (void)mark; gtk_widget_queue_draw(GTK_WIDGET(layer->view));
 }
+
 static GPtrArray *current_refs(ImageLayer *layer) {
     GPtrArray *refs = g_ptr_array_new_with_free_func(reference_free);
     for (guint i = 0; i < layer->previews->len; i++) {
@@ -253,6 +273,7 @@ static GPtrArray *current_refs(ImageLayer *layer) {
     }
     return refs;
 }
+
 static gboolean image_key(GtkWidget *widget, GdkEventKey *event, ImageLayer *layer) {
     if (event->state & (GDK_CONTROL_MASK|GDK_MOD1_MASK|GDK_SUPER_MASK)) return FALSE;
     gboolean up = event->keyval == GDK_KEY_Up, down = event->keyval == GDK_KEY_Down;
@@ -276,6 +297,7 @@ static gboolean image_key(GtkWidget *widget, GdkEventKey *event, ImageLayer *lay
     if (handled) { gtk_text_view_scroll_mark_onscreen(layer->view,gtk_text_buffer_get_insert(layer->buffer)); gtk_widget_queue_draw(widget); }
     return handled;
 }
+
 static void boundary_insert(GtkTextBuffer *buffer, GtkTextIter *location, char *text, int length, ImageLayer *layer) {
     if (layer->inserting || !layer->previews->len) return;
     GPtrArray *refs = current_refs(layer); int back = 0;
@@ -287,6 +309,7 @@ static void boundary_insert(GtkTextBuffer *buffer, GtkTextIter *location, char *
     if (back) { gtk_text_iter_backward_char(&at); gtk_text_buffer_place_cursor(buffer,&at); }
     *location = at; gtk_text_buffer_end_user_action(buffer); layer->inserting = FALSE; g_free(replacement);
 }
+
 static void boundary_inserted(GtkTextBuffer *buffer, GtkTextIter *location, char *text, int length, ImageLayer *layer) {
     if (!layer->previews->len) return;
     GtkTextIter start = *location; gtk_text_iter_backward_chars(&start,(int)g_utf8_strlen(text,length));
@@ -298,6 +321,7 @@ static void boundary_inserted(GtkTextBuffer *buffer, GtkTextIter *location, char
         ImageBlock *block = g_ptr_array_index(layer->blocks,i); gtk_text_buffer_remove_tag(buffer,block->space,&start,location);
     }
 }
+
 ImageLayer *images_new(GtkTextView *view) {
     ImageLayer *layer = g_new0(ImageLayer,1); layer->view = g_object_ref(view); layer->buffer = g_object_ref(gtk_text_view_get_buffer(view));
     layer->hidden = gtk_text_buffer_create_tag(layer->buffer,NULL,"invisible",TRUE,NULL);
@@ -312,6 +336,7 @@ ImageLayer *images_new(GtkTextView *view) {
     layer->inserted_handler = g_signal_connect_after(layer->buffer,"insert-text",G_CALLBACK(boundary_inserted),layer);
     return layer;
 }
+
 void images_refresh(ImageLayer *layer, GFile *folder, gboolean source) {
     if (!layer) return;
     clear(layer);
@@ -347,6 +372,7 @@ void images_refresh(ImageLayer *layer, GFile *folder, gboolean source) {
     }
     g_ptr_array_unref(refs); g_hash_table_unref(layer->cache); layer->cache = cache; layout(layer);
 }
+
 gboolean images_copy(ImageLayer *layer, gboolean cut) {
     if (!layer) return FALSE;
     GtkTextIter a,z;
@@ -362,6 +388,7 @@ gboolean images_copy(ImageLayer *layer, gboolean cut) {
     }
     return FALSE;
 }
+
 void images_free(ImageLayer *layer) {
     if (!layer) return;
     if (layer->layout_source) g_source_remove(layer->layout_source);

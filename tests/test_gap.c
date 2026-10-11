@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+
 int main(void) {
     Gap g = {0}; char reference[100000] = {0}; size_t len = 0;
     srand(42);

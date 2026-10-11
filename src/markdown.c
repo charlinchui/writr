@@ -23,11 +23,13 @@ void markdown_init(GtkTextBuffer *b) {
     gtk_text_buffer_create_tag(b, "number", "foreground", "#f78c6c", NULL);
     gtk_text_buffer_create_tag(b, "link", "foreground", "#82aaff", "underline", PANGO_UNDERLINE_SINGLE, NULL);
 }
+
 static gboolean keyword(const char *s, int n) {
     static const char *words[] = {"if","else","for","while","return","void","int","char","float","double","unsigned","struct","typedef","const","static","sizeof","switch","case","break","bool","include","define","def","class","import","from","as","fn","let","mut","pub","use","true","false","null","None","True","False","function","var","async","await",NULL};
     for (int i = 0; words[i]; i++) if ((int)strlen(words[i]) == n && !memcmp(words[i], s, n)) return TRUE;
     return FALSE;
 }
+
 static void code(GtkTextBuffer *b, const char *s, int line) {
     int n = (int)strlen(s);
     tag(b, "code", line, 0, n);
@@ -47,12 +49,30 @@ static void code(GtkTextBuffer *b, const char *s, int line) {
         } else i = (int)(g_utf8_next_char(s+i) - s);
     }
 }
+
+static gboolean content(const char *start, const char *end) {
+    for (const char *p = start; *p && (!end || p < end); p = g_utf8_next_char(p))
+        if (!g_unichar_isspace(g_utf8_get_char(p))) return TRUE;
+    return FALSE;
+}
+
+static gboolean fence_content(char **lines, int opening, char fence, int length) {
+    for (int i = opening+1; lines[i]; i++) {
+        const char *s = lines[i]; int indent = 0, run = 0;
+        while (indent < 3 && s[indent] == ' ') indent++;
+        while (s[indent+run] == fence) run++;
+        if (run >= length && !content(s+indent+run,NULL)) return FALSE;
+        if (content(s,NULL)) return TRUE;
+    }
+    return FALSE;
+}
+
 void markdown_style(GtkTextBuffer *b) {
     GtkTextIter a, z; gtk_text_buffer_get_bounds(b, &a, &z);
     gtk_text_buffer_remove_all_tags(b, &a, &z);
     char *text = gtk_text_buffer_get_text(b, &a, &z, TRUE);
     char **lines = g_strsplit(text, "\n", -1);
-    char fence = 0; int fence_len = 0;
+    char fence = 0; int fence_len = 0; gboolean hide_fence = FALSE;
     for (int line = 0; lines[line]; line++) {
         char *s = lines[line]; int n = (int)strlen(s), indent = 0;
         while (indent < 3 && s[indent] == ' ') indent++;
@@ -61,7 +81,8 @@ void markdown_style(GtkTextBuffer *b) {
         gboolean closing = fence && c == fence && run >= fence_len;
         if (closing) { for (int j = indent+run; s[j]; j++) if (!g_ascii_isspace(s[j])) closing = FALSE; }
         if ((!fence && run >= 3) || closing) {
-            tag(b, "syntax", line, 0, n);
+            if (!fence) hide_fence = fence_content(lines,line,c,run);
+            if (hide_fence) tag(b, "syntax", line, 0, n);
             if (fence) fence = 0; else { fence = c; fence_len = run; }
             continue;
         }
@@ -69,11 +90,11 @@ void markdown_style(GtkTextBuffer *b) {
         int h = 0; while (s[indent+h] == '#' && h < 7) h++;
         if (h > 0 && h <= 6 && (s[indent+h] == ' ' || !s[indent+h])) {
             char name[8]; g_snprintf(name, sizeof name, "h%d", h); tag(b, name, line, 0, n);
-            tag(b, "syntax", line, 0, indent+h+(s[indent+h] == ' '));
+            if (content(s+indent+h,NULL)) tag(b, "syntax", line, 0, indent+h+(s[indent+h] == ' '));
         }
         if (s[indent] == '>') {
             tag(b, "muted", line, 0, n);
-            tag(b, "syntax", line, 0, indent+1+(s[indent+1] == ' '));
+            if (content(s+indent+1,NULL)) tag(b, "syntax", line, 0, indent+1+(s[indent+1] == ' '));
         }
         for (int i = 0; i < n;) {
             if (s[i] == '\\' && i+1 < n) { i = (int)(g_utf8_next_char(s+i+1)-s); continue; }
@@ -83,7 +104,7 @@ void markdown_style(GtkTextBuffer *b) {
             if (style) {
                 char delimiter[3] = {s[i], width == 2 ? s[i] : 0, 0};
                 char *end = strstr(s+i+width, delimiter);
-                if (end && end > s+i+width) { int finish = (int)(end-s)+width; tag(b, style, line, i, finish);
+                if (end && content(s+i+width,end)) { int finish = (int)(end-s)+width; tag(b, style, line, i, finish);
                     tag(b, "syntax", line, i, i+width);
                     tag(b, "syntax", line, (int)(end-s), finish);
                     i = finish; continue; }
@@ -91,7 +112,7 @@ void markdown_style(GtkTextBuffer *b) {
             gboolean image = s[i] == '!' && s[i+1] == '[';
             if (s[i] == '[' || image) {
                 char *end = strstr(s+i+(image ? 1 : 0), "]("); char *close = end ? strchr(end+2, ')') : NULL;
-                if (close) { tag(b, "link", line, i, (int)(close-s)+1);
+                if (close && content(s+i+1+(image ? 1 : 0),end)) { tag(b, "link", line, i, (int)(close-s)+1);
                     tag(b, "syntax", line, i, i+1+(image ? 1 : 0));
                     tag(b, "syntax", line, (int)(end-s), (int)(close-s)+1);
                     i = (int)(close-s)+1; continue; }

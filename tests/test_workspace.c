@@ -2,6 +2,7 @@
 #include <glib/gstdio.h>
 #include <assert.h>
 #include <string.h>
+
 static gboolean find(GtkTreeStore *store, GtkTreeIter *parent, const char *name, GtkTreeIter *out) {
     GtkTreeIter it;
     if (!gtk_tree_model_iter_children(GTK_TREE_MODEL(store), &it, parent)) return FALSE;
@@ -12,6 +13,7 @@ static gboolean find(GtkTreeStore *store, GtkTreeIter *parent, const char *name,
     } while (gtk_tree_model_iter_next(GTK_TREE_MODEL(store), &it));
     return FALSE;
 }
+
 int main(void) {
     char *path = g_dir_make_tmp("writr-workspace-XXXXXX",NULL); assert(path);
     GFile *root = g_file_new_for_path(path), *folder = NULL, *note = NULL, *nested = NULL;

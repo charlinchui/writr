@@ -4,16 +4,19 @@
 #include <glib/gstdio.h>
 #include <assert.h>
 #include <string.h>
+
 static void boxed_types(void) {
     G_GNUC_BEGIN_IGNORE_DEPRECATIONS
     g_type_ensure(GDK_TYPE_COLOR);
     G_GNUC_END_IGNORE_DEPRECATIONS
     g_type_ensure(GDK_TYPE_RGBA); g_type_ensure(PANGO_TYPE_FONT_DESCRIPTION);
 }
+
 static void unchanged(GtkTextBuffer *buffer, const char *expected) {
     GtkTextIter a,z; gtk_text_buffer_get_bounds(buffer,&a,&z);
     char *text = gtk_text_buffer_get_text(buffer,&a,&z,TRUE); assert(!strcmp(text,expected)); g_free(text);
 }
+
 static void navigation_checks(void) {
     const char *doc = "Before\n![a](a.png)\n![b](b.png)\nAfter";
     GtkTextBuffer *buffer = gtk_text_buffer_new(NULL);
@@ -46,6 +49,7 @@ static void navigation_checks(void) {
     assert(image_delete_edge(buffer,refs,TRUE)); unchanged(buffer,"");
     g_ptr_array_unref(refs); g_object_unref(buffer);
 }
+
 static guint red_pixels(GdkPixbuf *image) {
     assert(image); guint count = 0; int channels = gdk_pixbuf_get_n_channels(image), stride = gdk_pixbuf_get_rowstride(image);
     for (int y = 0; y < gdk_pixbuf_get_height(image); y++) for (int x = 0; x < gdk_pixbuf_get_width(image); x++) {
@@ -54,6 +58,7 @@ static guint red_pixels(GdkPixbuf *image) {
     }
     return count;
 }
+
 int main(int argc, char **argv) {
     gboolean display = gtk_init_check(&argc,&argv); boxed_types(); navigation_checks();
     const char *source = "é🙂\n![first](assets/one.png) and ![second](assets/a(b).png)\n`![code](x.png)`\n```md\n![fenced](x.png)\n```\n\\![escaped](x.png)\n![space](<assets/two words.png>)";

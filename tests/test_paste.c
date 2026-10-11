@@ -3,9 +3,11 @@
 #include <assert.h>
 #include <string.h>
 #include <png.h>
+
 static void check_link(const char *text, const char *label, const char *expected) {
     char *markdown = paste_link(text,label); assert(markdown && !strcmp(markdown,expected)); g_free(markdown);
 }
+
 int main(void) {
     check_link("https://example.com",NULL,"[https://example.com](https://example.com)");
     check_link(" https://example.com/a(b)?q=x%20y\n","Read [this]","[Read \\[this\\]](https://example.com/a%28b%29?q=x%20y)");

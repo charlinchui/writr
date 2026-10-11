@@ -11,6 +11,7 @@ static char *escape_label(const char *text) {
     }
     return g_string_free(label,FALSE);
 }
+
 char *paste_link(const char *text, const char *label) {
     if (!text || !g_utf8_validate(text,-1,NULL)) return NULL;
     char *url = g_strdup(text); g_strstrip(url);
@@ -30,6 +31,7 @@ char *paste_link(const char *text, const char *label) {
     char *markdown = g_strdup_printf("[%s](%s)",title,destination->str);
     g_free(title); g_free(url); g_string_free(destination,TRUE); return markdown;
 }
+
 static gboolean encode_png(GdkPixbuf *image, char **buffer, gsize *size, GError **error) {
     png_image png = {0}; png.version = PNG_IMAGE_VERSION;
     png.width = (png_uint_32)gdk_pixbuf_get_width(image); png.height = (png_uint_32)gdk_pixbuf_get_height(image);
@@ -45,6 +47,7 @@ static gboolean encode_png(GdkPixbuf *image, char **buffer, gsize *size, GError 
     else *size = bytes;
     png_image_free(&png); return ok;
 }
+
 char *paste_image(GdkPixbuf *image, GFile *folder, GFile **asset, GError **error) {
     *asset = NULL;
     if (!folder) { g_set_error_literal(error,G_IO_ERROR,G_IO_ERROR_NOT_FOUND,"Create a workspace or save this note before pasting an image."); return NULL; }
@@ -71,6 +74,7 @@ char *paste_image(GdkPixbuf *image, GFile *folder, GFile **asset, GError **error
     else { g_file_delete(file,NULL,NULL); g_object_unref(file); }
     g_free(name); return markdown;
 }
+
 /* Read the source, not potentially stale display tags, to avoid converting code URLs. */
 gboolean paste_code_at(const char *source, size_t position) {
     size_t length = strlen(source); if (position > length) position = length;

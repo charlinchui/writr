@@ -8,10 +8,12 @@ static void equal(Editor *e, const char *expected) {
     GtkTextIter a, z; gtk_text_buffer_get_bounds(e->buffer, &a, &z);
     s = gtk_text_buffer_get_text(e->buffer, &a, &z, TRUE); assert(!strcmp(s, expected)); g_free(s);
 }
+
 static void tagged(Editor *e, int line, int byte, const char *name) {
     GtkTextIter it; gtk_text_buffer_get_iter_at_line_index(e->buffer, &it, line, byte);
     assert(gtk_text_iter_has_tag(&it, gtk_text_tag_table_lookup(gtk_text_buffer_get_tag_table(e->buffer), name)));
 }
+
 int main(int argc, char **argv) {
     char *config = g_dir_make_tmp("writr-config-XXXXXX",NULL); assert(config);
     g_setenv("XDG_CONFIG_HOME",config,TRUE);
@@ -23,6 +25,17 @@ int main(int argc, char **argv) {
     Editor e = {0}; e.drafts = g_hash_table_new_full(g_str_hash,g_str_equal,g_free,NULL);
     e.buffer = gtk_text_buffer_new(NULL); e.history = g_ptr_array_new_with_free_func(edit_free); e.saved = g_strdup(""); markdown_init(e.buffer);
     g_signal_connect(e.buffer, "insert-text", G_CALLBACK(inserted), &e); g_signal_connect(e.buffer, "delete-range", G_CALLBACK(deleted), &e);
+    g_signal_connect_after(e.buffer,"insert-text",G_CALLBACK(format_inserted),&e);
+    g_signal_connect_after(e.buffer,"delete-range",G_CALLBACK(format_deleted),&e);
+    /* Formatting is already applied on return, without waiting for the event loop. */
+    gtk_text_buffer_insert_at_cursor(e.buffer,"#",-1); tagged(&e,0,0,"h1");
+    gtk_text_buffer_insert_at_cursor(e.buffer," Title",-1); tagged(&e,0,2,"h1"); tagged(&e,0,0,"syntax");
+    GtkTextIter heading_start,heading_end;
+    gtk_text_buffer_get_iter_at_offset(e.buffer,&heading_start,1); gtk_text_buffer_get_end_iter(e.buffer,&heading_end);
+    gtk_text_buffer_delete(e.buffer,&heading_start,&heading_end); tagged(&e,0,0,"h1");
+    gtk_text_buffer_get_start_iter(e.buffer,&heading_start);
+    assert(!gtk_text_iter_has_tag(&heading_start,gtk_text_tag_table_lookup(gtk_text_buffer_get_tag_table(e.buffer),"syntax")));
+    load(&e,NULL);
     g_signal_connect(e.buffer, "begin-user-action", G_CALLBACK(begin), &e); g_signal_connect(e.buffer, "end-user-action", G_CALLBACK(end), &e);
     gtk_text_buffer_insert_at_cursor(e.buffer, "é🙂", -1); equal(&e, "é🙂");
     GtkTextIter a,z; gtk_text_buffer_get_iter_at_offset(e.buffer, &a, 1); gtk_text_buffer_insert(e.buffer, &a, "中", -1); equal(&e,"é中🙂");
@@ -41,6 +54,19 @@ int main(int argc, char **argv) {
     markdown_source(e.buffer,TRUE); gtk_text_buffer_get_bounds(e.buffer,&a,&z);
     visible = gtk_text_buffer_get_text(e.buffer,&a,&z,FALSE); assert(!strcmp(visible,raw)); g_free(visible);
     markdown_source(e.buffer,FALSE); free(raw);
+    /* Empty constructs retain their markers, including fences with a language. */
+    GtkTextBuffer *empty = gtk_text_buffer_new(NULL); markdown_init(empty);
+    const char *unfinished = "#\n##   \n> \n** **\n[](/path)\n```c\n  \n```\n~~~\n~~~";
+    gtk_text_buffer_set_text(empty,unfinished,-1); markdown_style(empty);
+    gtk_text_buffer_get_bounds(empty,&a,&z);
+    visible = gtk_text_buffer_get_text(empty,&a,&z,FALSE);
+    assert(!strcmp(visible,unfinished)); g_free(visible);
+    gtk_text_buffer_set_text(empty,"```c\nint x;\n```",-1); markdown_style(empty);
+    gtk_text_buffer_get_bounds(empty,&a,&z); visible = gtk_text_buffer_get_text(empty,&a,&z,FALSE);
+    assert(!strcmp(visible,"\nint x;\n")); g_free(visible);
+    gtk_text_buffer_set_text(empty,"```c\n\n```",-1); markdown_style(empty);
+    gtk_text_buffer_get_bounds(empty,&a,&z); visible = gtk_text_buffer_get_text(empty,&a,&z,FALSE);
+    assert(!strcmp(visible,"```c\n\n```")); g_free(visible); g_object_unref(empty);
     /* Editing across invisible delimiters must preserve exact undo data. */
     gtk_text_buffer_get_iter_at_line(e.buffer,&a,1); z=a; gtk_text_iter_forward_line(&z);
     raw = gap_text(&e.gap); gtk_text_buffer_delete(e.buffer,&a,&z); history(&e,FALSE); equal(&e,raw); free(raw);

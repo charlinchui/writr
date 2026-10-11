@@ -2,6 +2,7 @@
 #include <string.h>
 #include <errno.h>
 #include <glib/gstdio.h>
+
 static gint order(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b, gpointer data) {
     (void)data; gboolean ad, bd; char *an, *bn;
     gtk_tree_model_get(model,a,WS_DIRECTORY,&ad,WS_NAME,&an,-1);
@@ -9,12 +10,14 @@ static gint order(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b, gpointer 
     int result = ad != bd ? (ad ? -1 : 1) : g_utf8_collate(an ? an : "", bn ? bn : "");
     g_free(an); g_free(bn); return result;
 }
+
 GtkTreeStore *workspace_store(void) {
     GtkTreeStore *store = gtk_tree_store_new(WS_COLUMNS,G_TYPE_STRING,G_TYPE_FILE,G_TYPE_BOOLEAN,G_TYPE_BOOLEAN);
     gtk_tree_sortable_set_default_sort_func(GTK_TREE_SORTABLE(store),order,NULL,NULL);
     gtk_tree_sortable_set_sort_column_id(GTK_TREE_SORTABLE(store),GTK_TREE_SORTABLE_DEFAULT_SORT_COLUMN_ID,GTK_SORT_ASCENDING);
     return store;
 }
+
 gboolean workspace_populate(GtkTreeStore *store, GtkTreeIter *parent, GFile *folder, GError **error) {
     GFileEnumerator *items = g_file_enumerate_children(folder,
         "standard::name,standard::display-name,standard::type,standard::is-hidden,standard::is-symlink",
@@ -44,6 +47,7 @@ gboolean workspace_populate(GtkTreeStore *store, GtkTreeIter *parent, GFile *fol
     if (parent) gtk_tree_store_set(store,parent,WS_LOADED,TRUE,-1);
     g_ptr_array_unref(infos); return TRUE;
 }
+
 gboolean workspace_root(GtkTreeStore *store, GFile *folder, GError **error) {
     /* Prepare the new root before dropping the previous workspace. */
     GtkTreeStore *next = workspace_store();
@@ -62,6 +66,7 @@ gboolean workspace_root(GtkTreeStore *store, GFile *folder, GError **error) {
     }
     g_object_unref(next); return ok;
 }
+
 gboolean workspace_create(GFile *parent, const char *name, gboolean directory, GFile **created, GError **error) {
     *created = NULL;
     if (!name || !*name || !strcmp(name,".") || !strcmp(name,"..") || strchr(name,'/') || name[0] == '.' || !g_utf8_validate(name,-1,NULL)) {
@@ -94,11 +99,13 @@ static gboolean collect_notes(GFile *folder, GPtrArray *notes, GError **error) {
     } while (gtk_tree_model_iter_next(GTK_TREE_MODEL(store),&it));
     g_object_unref(store); return ok;
 }
+
 GPtrArray *workspace_notes(GFile *folder, GError **error) {
     GPtrArray *notes = g_ptr_array_new_with_free_func(g_object_unref);
     if (!collect_notes(folder,notes,error)) { g_ptr_array_unref(notes); return NULL; }
     return notes;
 }
+
 GFile *workspace_neighbor(GPtrArray *notes, GFile *current, gboolean next) {
     if (!notes->len) return NULL;
     guint index = next ? 0 : notes->len-1;
@@ -107,6 +114,7 @@ GFile *workspace_neighbor(GPtrArray *notes, GFile *current, gboolean next) {
     }
     return g_object_ref(g_ptr_array_index(notes,index));
 }
+
 gboolean workspace_seed(GFile *folder, GFile **created, GError **error) {
     *created = NULL;
     GPtrArray *notes = workspace_notes(folder,error);
@@ -115,7 +123,6 @@ gboolean workspace_seed(GFile *folder, GFile **created, GError **error) {
     if (!empty) return TRUE;
     return workspace_create(folder,"undefined.md",FALSE,created,error);
 }
-
 
 gboolean workspace_write_state(const char *path, GFile *folder, GError **error) {
     char *dir = g_path_get_dirname(path);
@@ -128,6 +135,7 @@ gboolean workspace_write_state(const char *path, GFile *folder, GError **error) 
     char *uri = g_file_get_uri(folder);
     gboolean ok = g_file_set_contents(path,uri,-1,error); g_free(uri); return ok;
 }
+
 GFile *workspace_read_state(const char *path, GError **error) {
     char *value = NULL;
     if (!g_file_get_contents(path,&value,NULL,error)) return NULL;
